@@ -1,0 +1,339 @@
+# Bounded JSON parser. Values stay as raw JSON so large IDs never pass through int.
+pub struct Text [
+    pub bool ok
+    pub str value
+]
+
+pub struct Integer [
+    pub bool ok
+    pub int value
+]
+
+fn space [str source, int pos] int [
+    int n = str.len source
+    while [pos lt n] [
+        int c = str.at source, pos
+        if [c ne 32 and c ne 9 and c ne 10 and c ne 13] [ break ]
+        pos = pos add 1
+    ]
+    = pos
+]
+
+fn hex [int c] int [
+    if [c ge 48 and c le 57] [ = c sub 48 ]
+    if [c ge 65 and c le 70] [ = c sub 55 ]
+    if [c ge 97 and c le 102] [ = c sub 87 ]
+    = 0 sub 1
+]
+
+fn code_unit [str source, int pos] int [
+    if [pos add 4 gt str.len source] [ = 0 sub 1 ]
+    int value = 0
+    int stop = pos add 4
+    while [pos lt stop] [
+        int digit = hex str.at source, pos
+        if [digit lt 0] [ = 0 sub 1 ]
+        value = value mul 16 add digit
+        pos = pos add 1
+    ]
+    = value
+]
+
+# Validates unescaped UTF-8, excluding overlong encodings and surrogate codepoints.
+fn utf8_end [str source, int pos] int [
+    int lead = str.at source, pos
+    int width = 0
+    if [lead ge 194 and lead le 223] [ width = 2 ]
+    if [lead ge 224 and lead le 239] [ width = 3 ]
+    if [lead ge 240 and lead le 244] [ width = 4 ]
+    if [width eq 0 or pos add width gt str.len source] [ = 0 sub 1 ]
+    int second = str.at source, [pos add 1]
+    if [lead eq 224 and second lt 160] [ = 0 sub 1 ]
+    if [lead eq 237 and second gt 159] [ = 0 sub 1 ]
+    if [lead eq 240 and second lt 144] [ = 0 sub 1 ]
+    if [lead eq 244 and second gt 143] [ = 0 sub 1 ]
+    int i = 1
+    while [i lt width] [
+        int c = str.at source, [pos add i]
+        if [c lt 128 or c gt 191] [ = 0 sub 1 ]
+        i = i add 1
+    ]
+    = pos add width
+]
+
+fn string_end [str source, int pos] int [
+    int n = str.len source
+    if [pos ge n or str.at source, pos ne 34] [ = 0 sub 1 ]
+    pos = pos add 1
+    while [pos lt n] [
+        int c = str.at source, pos
+        if [c eq 34] [ = pos add 1 ]
+        if [c lt 32] [ = 0 sub 1 ]
+        if [c ge 128] [
+            pos = utf8_end source, pos
+            if [pos lt 0] [ = 0 sub 1 ]
+            continue
+        ]
+        if [c eq 92] [
+            pos = pos add 1
+            if [pos ge n] [ = 0 sub 1 ]
+            c = str.at source, pos
+            if [c eq 117] [
+                int unit = code_unit source, [pos add 1]
+                if [unit lt 0] [ = 0 sub 1 ]
+                pos = pos add 4
+                if [unit ge 55296 and unit le 56319] [
+                    if [pos add 6 ge n] [ = 0 sub 1 ]
+                    if [str.at source, [pos add 1] ne 92 or str.at source, [pos add 2] ne 117] [ = 0 sub 1 ]
+                    int low = code_unit source, [pos add 3]
+                    if [low lt 56320 or low gt 57343] [ = 0 sub 1 ]
+                    pos = pos add 6
+                ]
+                else [ if [unit ge 56320 and unit le 57343] [ = 0 sub 1 ] ]
+            ]
+            else [
+                if [c ne 34 and c ne 92 and c ne 47 and c ne 98 and c ne 102 and c ne 110 and c ne 114 and c ne 116] [ = 0 sub 1 ]
+            ]
+        ]
+        pos = pos add 1
+    ]
+    = 0 sub 1
+]
+
+fn number_end [str source, int pos] int [
+    int n = str.len source
+    if [str.at source, pos eq 45] [ pos = pos add 1 ]
+    if [pos ge n] [ = 0 sub 1 ]
+    int c = str.at source, pos
+    if [c eq 48] [ pos = pos add 1 ]
+    else [
+        if [c lt 49 or c gt 57] [ = 0 sub 1 ]
+        while [pos lt n] [
+            c = str.at source, pos
+            if [c lt 48 or c gt 57] [ break ]
+            pos = pos add 1
+        ]
+    ]
+    if [pos lt n and str.at source, pos eq 46] [
+        pos = pos add 1
+        int start = pos
+        while [pos lt n] [
+            c = str.at source, pos
+            if [c lt 48 or c gt 57] [ break ]
+            pos = pos add 1
+        ]
+        if [pos eq start] [ = 0 sub 1 ]
+    ]
+    c = str.at source, pos
+    if [pos lt n and c eq 101 or pos lt n and c eq 69] [
+        pos = pos add 1
+        c = str.at source, pos
+        if [c eq 43 or c eq 45] [ pos = pos add 1 ]
+        int start = pos
+        while [pos lt n] [
+            c = str.at source, pos
+            if [c lt 48 or c gt 57] [ break ]
+            pos = pos add 1
+        ]
+        if [pos eq start] [ = 0 sub 1 ]
+    ]
+    = pos
+]
+
+fn value_end [str source, int pos, int depth] int [
+    if [depth gt 32] [ = 0 sub 1 ]
+    pos = space source, pos
+    int n = str.len source
+    if [pos ge n] [ = 0 sub 1 ]
+    int c = str.at source, pos
+    if [c eq 34] [ = string_end source, pos ]
+    if [c eq 123 or c eq 91] [
+        int close = 93
+        if [c eq 123] [ close = 125 ]
+        pos = space source, [pos add 1]
+        if [str.at source, pos eq close] [ = pos add 1 ]
+        while [pos lt n] [
+            if [close eq 125] [
+                pos = string_end source, pos
+                if [pos lt 0] [ = 0 sub 1 ]
+                pos = space source, pos
+                if [str.at source, pos ne 58] [ = 0 sub 1 ]
+                pos = space source, [pos add 1]
+            ]
+            pos = value_end source, pos, [depth add 1]
+            if [pos lt 0] [ = 0 sub 1 ]
+            pos = space source, pos
+            if [str.at source, pos eq close] [ = pos add 1 ]
+            if [str.at source, pos ne 44] [ = 0 sub 1 ]
+            pos = space source, [pos add 1]
+        ]
+        = 0 sub 1
+    ]
+    str rest = str.slice source, pos, n
+    if [str.starts rest, 'true'] [ = pos add 4 ]
+    if [str.starts rest, 'false'] [ = pos add 5 ]
+    if [str.starts rest, 'null'] [ = pos add 4 ]
+    = number_end source, pos
+]
+
+pub fn valid [str source] bool [
+    if [str.len source gt 524288] [ = false ]
+    int end = value_end source, 0, 0
+    if [end lt 0] [ = false ]
+    = space source, end eq str.len source
+]
+
+fn unicode [int code] str [
+    if [code lt 128] [ = str.chr code ]
+    if [code lt 2048] [
+        str out = str.chr [code div 64 add 192]
+        = str.concat out, str.chr [code mod 64 add 128]
+    ]
+    if [code lt 65536] [
+        str out = str.chr [code div 4096 add 224]
+        out = str.concat out, str.chr [code div 64 mod 64 add 128]
+        = str.concat out, str.chr [code mod 64 add 128]
+    ]
+    str out = str.chr [code div 262144 add 240]
+    out = str.concat out, str.chr [code div 4096 mod 64 add 128]
+    out = str.concat out, str.chr [code div 64 mod 64 add 128]
+    = str.concat out, str.chr [code mod 64 add 128]
+]
+
+# NUL is valid JSON but cannot be represented by Zinc's NUL-terminated str.
+pub fn text [str source] Text [
+    if [not valid source] [ = Text [false, ''] ]
+    source = str.trim source
+    int n = str.len source
+    if [str.at source, 0 ne 34] [ = Text [false, ''] ]
+    str out = ''
+    int i = 1
+    while [i lt n sub 1] [
+        int c = str.at source, i
+        if [c eq 92] [
+            i = i add 1
+            c = str.at source, i
+            if [c eq 117] [
+                int unit = code_unit source, [i add 1]
+                i = i add 4
+                if [unit ge 55296 and unit le 56319] [
+                    int low = code_unit source, [i add 3]
+                    unit = [unit sub 55296] mul 1024 add [low sub 56320] add 65536
+                    i = i add 6
+                ]
+                if [unit eq 0] [ = Text [false, ''] ]
+                out = str.concat out, unicode unit
+                i = i add 1
+                continue
+            ]
+            if [c eq 98] [ c = 8 ]
+            if [c eq 102] [ c = 12 ]
+            if [c eq 110] [ c = 10 ]
+            if [c eq 114] [ c = 13 ]
+            if [c eq 116] [ c = 9 ]
+        ]
+        out = str.concat out, str.chr c
+        i = i add 1
+    ]
+    = Text [true, out]
+]
+
+# First matching decoded object key, returned as raw JSON. Missing != JSON null.
+pub fn member [str source, str key] Text [
+    if [not valid source] [ = Text [false, ''] ]
+    int pos = space source, 0
+    if [str.at source, pos ne 123] [ = Text [false, ''] ]
+    pos = space source, [pos add 1]
+    while [str.at source, pos ne 125] [
+        int end = string_end source, pos
+        Text name = text str.slice source, pos, end
+        pos = space source, end
+        pos = space source, [pos add 1]
+        end = value_end source, pos, 0
+        if [name.ok and str.eq name.value, key] [ = Text [true, str.slice source, pos, end] ]
+        pos = space source, end
+        if [str.at source, pos eq 125] [ break ]
+        pos = space source, [pos add 1]
+    ]
+    = Text [false, '']
+]
+
+pub fn quote [str value] str [
+    str out = str.chr 34
+    int i = 0
+    while [i lt str.len value] [
+        int c = str.at value, i
+        if [c eq 34 or c eq 92] [ out = str.concat out, str.chr 92 ]
+        if [c lt 32] [
+            str digits = '0123456789abcdef'
+            out = str.concat out, '\\u00'
+            out = str.concat out, str.slice digits, [c div 16], [c div 16 add 1]
+            out = str.concat out, str.slice digits, [c mod 16], [c mod 16 add 1]
+        ]
+        else [ out = str.concat out, str.chr c ]
+        i = i add 1
+    ]
+    = str.concat out, str.chr 34
+]
+
+# Explicitly bounded conversion, never truncate Discord snowflake strings to int.
+pub fn unsigned_int [str source] Integer [
+    if [not valid source] [ = Integer [false, 0] ]
+    source = str.trim source
+    int n = str.len source
+    if [n eq 0 or n gt 10] [ = Integer [false, 0] ]
+    int value = 0
+    int i = 0
+    while [i lt n] [
+        int c = str.at source, i
+        if [c lt 48 or c gt 57] [ = Integer [false, 0] ]
+        int digit = c sub 48
+        if [value gt 214748364] [ = Integer [false, 0] ]
+        if [value eq 214748364 and digit gt 7] [ = Integer [false, 0] ]
+        value = value mul 10 add digit
+        i = i add 1
+    ]
+    = Integer [true, value]
+]
+
+# Lossless unsigned decimal syntax, without converting to machine int.
+pub fn unsigned_decimal [str source] bool [
+    if [not valid source] [ = false ]
+    source = str.trim source
+    int i = 0
+    while [i lt str.len source] [
+        int c = str.at source, i
+        if [c lt 48 or c gt 57] [ = false ]
+        i = i add 1
+    ]
+    = i gt 0
+]
+
+pub fn element [str source, int index] Text [
+    if [index lt 0 or not valid source] [ = Text [false, ''] ]
+    int pos = space source, 0
+    if [str.at source, pos ne 91] [ = Text [false, ''] ]
+    pos = space source, [pos add 1]
+    int current = 0
+    while [str.at source, pos ne 93] [
+        int end = value_end source, pos, 0
+        if [current eq index] [ = Text [true, str.slice source, pos, end] ]
+        current = current add 1
+        pos = space source, end
+        if [str.at source, pos eq 93] [ break ]
+        pos = space source, [pos add 1]
+    ]
+    = Text [false, '']
+]
+
+pub fn kind [str source] str [
+    if [not valid source] [ = 'invalid' ]
+    int start = space source, 0
+    int c = str.at source, start
+    if [c eq 34] [ = 'string' ]
+    if [c eq 123] [ = 'object' ]
+    if [c eq 91] [ = 'array' ]
+    if [c eq 110] [ = 'null' ]
+    if [c eq 116 or c eq 102] [ = 'boolean' ]
+    = 'number'
+]

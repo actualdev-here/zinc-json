@@ -1,0 +1,5 @@
+[package]
+name = "zinc-json"
+version = "0.1.0"
+kind = "library"
+entry = "src/lib.zn"
